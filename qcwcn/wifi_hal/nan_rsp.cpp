@@ -341,27 +341,37 @@ void NanCommand::NanErrorTranslation(NanInternalStatusType firmwareErrorRecvd,
                                      u32 valueRcvd,
                                      void* pResponse)
 {
-    int i = 0;
+    int i = 0, j = 0;
     u16 msg_id; /* Based on the message_id in the header determine the Indication type */
     NanResponseMsg *pRsp;
     NanPublishTerminatedInd* pRspInd;
     NanDisabledInd* pRspdInd;
+    char tlvInfo[NAN_ERROR_STR_LEN];
+    tlvInfo[0] = '\0';
 
     if (isNanResponse()) {
         pRsp = (NanResponseMsg*)pResponse;
         for (i = 0; i < (int)(sizeof(errorCodeTranslation)/ sizeof(errorCode)); i++) {
-                if (errorCodeTranslation[i].firmwareError == firmwareErrorRecvd) {
-                        pRsp->status =  errorCodeTranslation[i].frameworkError;
-                        strlcpy(pRsp->nan_error, errorCodeTranslation[i].nan_error, NAN_ERROR_STR_LEN);
-                        break;
+            if (errorCodeTranslation[i].firmwareError == firmwareErrorRecvd) {
+                pRsp->status =  errorCodeTranslation[i].frameworkError;
+                strlcpy(pRsp->nan_error, errorCodeTranslation[i].nan_error, NAN_ERROR_STR_LEN);
+                if (NAN_I_STATUS_INVALID_TLV_TYPE == firmwareErrorRecvd) {
+                    for (j = 0; j < (int)(sizeof(tlvToStr)/sizeof(verboseTlv)); j++) {
+                        if (tlvToStr[j].tlvType == valueRcvd) {
+                            strlcpy(tlvInfo, tlvToStr[i].strTlv, NAN_ERROR_STR_LEN);
+                            break;
+                        }
+                    }
                 }
+                strlcat(pRsp->nan_error, tlvInfo, sizeof(pRsp->nan_error));
+                break;
+            }
         }
         if (i == (int)(sizeof(errorCodeTranslation)/sizeof(errorCode))) {
                 pRsp->status =  NAN_STATUS_INTERNAL_FAILURE;
                 strlcpy(pRsp->nan_error, "NAN Discovery engine failure", NAN_ERROR_STR_LEN);
         }
-        ALOGD("%s: Status : %d", __FUNCTION__, pRsp->status);
-        ALOGD("%s: Value : %s", __FUNCTION__, pRsp->nan_error);
+        ALOGD("%s: Status: %d Error Info[value %d]: %s", __FUNCTION__, pRsp->status, valueRcvd, pRsp->nan_error);
     } else {
         msg_id = getIndicationType();
 
@@ -381,8 +391,7 @@ void NanCommand::NanErrorTranslation(NanInternalStatusType firmwareErrorRecvd,
                         pRspInd->reason =  NAN_STATUS_INTERNAL_FAILURE;
                         strlcpy(pRspInd->nan_reason, "NAN Discovery engine failure", NAN_ERROR_STR_LEN);
                 }
-                ALOGD("%s: Status : %d", __FUNCTION__, pRspInd->reason);
-                ALOGD("%s: Value : %s", __FUNCTION__, pRspInd->nan_reason);
+                ALOGD("%s: Status: %d Error Info[value %d]: %s", __FUNCTION__, pRspInd->reason, valueRcvd, pRspInd->nan_reason);
                 break;
         case NAN_INDICATION_DISABLED:
                 pRspdInd = (NanDisabledInd*)pResponse;
@@ -397,8 +406,7 @@ void NanCommand::NanErrorTranslation(NanInternalStatusType firmwareErrorRecvd,
                         pRspdInd->reason =  NAN_STATUS_INTERNAL_FAILURE;
                         strlcpy(pRspdInd->nan_reason, "NAN Discovery engine failure", NAN_ERROR_STR_LEN);
                 }
-                ALOGD("%s: Status : %d", __FUNCTION__, pRspdInd->reason);
-                ALOGD("%s: Value : %s", __FUNCTION__, pRspdInd->nan_reason);
+                ALOGD("%s: Status: %d Error Info[value %d]: %s", __FUNCTION__, pRspdInd->reason, valueRcvd, pRspdInd->nan_reason);
                 break;
         }
     }
@@ -512,7 +520,8 @@ int NanCommand::getNanResponse(transaction_id *id, NanResponseMsg *pRsp)
                     sizeof(pRsp->body.stats_response.data)) {
                     handleNanStatsResponse(pRsp->body.stats_response.stats_type,
                                            (char *)outputTlv.value,
-                                           &pRsp->body.stats_response);
+                                           &pRsp->body.stats_response,
+                                           outputTlv.length);
                 }
             } else
                 ALOGV("%s: No TLV's present",__func__);
@@ -587,6 +596,18 @@ int NanCommand::getNanResponse(transaction_id *id, NanResponseMsg *pRsp)
                        pFwRsp->max_app_info_len;
             pRsp->body.nan_capabilities.max_queued_transmit_followup_msgs = \
                        pFwRsp->max_queued_transmit_followup_msgs;
+            pRsp->body.nan_capabilities.ndp_supported_bands = \
+                       pFwRsp->ndp_supported_bands;
+            pRsp->body.nan_capabilities.cipher_suites_supported = \
+                       pFwRsp->cipher_suites_supported;
+            pRsp->body.nan_capabilities.max_scid_len = \
+                       pFwRsp->max_scid_len;
+            pRsp->body.nan_capabilities.is_ndp_security_supported = \
+                       pFwRsp->is_ndp_security_supported;
+            pRsp->body.nan_capabilities.max_sdea_service_specific_info_len = \
+                       pFwRsp->max_sdea_service_specific_info_len;
+            pRsp->body.nan_capabilities.max_subscribe_address = \
+                       pFwRsp->max_subscribe_address;
             break;
         }
         default:
@@ -627,6 +648,10 @@ int NanCommand::handleNanResponse()
         mStaParam->beacon_transmit_time = pSyncStats->currAmBTT;
         mStaParam->ndp_channel_freq = pSyncStats->ndpChannelFreq;
 
+        ALOGI("%s:0x%02x master_pref 0x%02x random_factor 0x%02x hop_count %u Channel",
+                __func__, mStaParam->master_pref, mStaParam->random_factor,
+                mStaParam->hop_count, mStaParam->ndp_channel_freq);
+
         return ret;
     }
     //Call the NotifyResponse Handler
@@ -638,10 +663,16 @@ int NanCommand::handleNanResponse()
 
 void NanCommand::handleNanStatsResponse(NanStatsType stats_type,
                                        char *rspBuf,
-                                       NanStatsResponse *pRsp)
+                                       NanStatsResponse *pRsp,
+                                       u32 message_len)
 {
     if (stats_type == NAN_STATS_ID_DE_PUBLISH) {
         NanPublishStats publish_stats;
+        if (message_len != sizeof(NanPublishStats)) {
+            ALOGE("%s: stats_type = %d invalid stats length = %u expected length = %zu\n",
+                    __func__, stats_type, message_len, sizeof(NanPublishStats));
+            return;
+        }
         FwNanPublishStats *pPubStats = (FwNanPublishStats *)rspBuf;
 
         publish_stats.validPublishServiceReqMsgs =
@@ -674,6 +705,11 @@ void NanCommand::handleNanStatsResponse(NanStatsType stats_type,
         memcpy(&pRsp->data, &publish_stats, sizeof(NanPublishStats));
     } else if (stats_type == NAN_STATS_ID_DE_SUBSCRIBE) {
         NanSubscribeStats sub_stats;
+        if (message_len != sizeof(NanSubscribeStats)) {
+            ALOGE("%s: stats_type = %d invalid stats length = %u expected length = %zu\n",
+                   __func__, stats_type, message_len, sizeof(NanSubscribeStats));
+            return;
+        }
         FwNanSubscribeStats *pSubStats = (FwNanSubscribeStats *)rspBuf;
 
         sub_stats.validSubscribeServiceReqMsgs =
@@ -712,6 +748,11 @@ void NanCommand::handleNanStatsResponse(NanStatsType stats_type,
         memcpy(&pRsp->data, &sub_stats, sizeof(NanSubscribeStats));
     } else if (stats_type == NAN_STATS_ID_DE_DW) {
         NanDWStats dw_stats;
+        if (message_len != sizeof(NanDWStats)) {
+            ALOGE("%s: stats_type = %d invalid stats length = %u expected length = %zu\n",
+                   __func__, stats_type, message_len, sizeof(NanDWStats));
+            return;
+        }
         FwNanMacStats *pMacStats = (FwNanMacStats *)rspBuf;
 
         dw_stats.validFrames = pMacStats->validFrames;
@@ -736,6 +777,11 @@ void NanCommand::handleNanStatsResponse(NanStatsType stats_type,
         memcpy(&pRsp->data, &dw_stats, sizeof(NanDWStats));
     } else if (stats_type == NAN_STATS_ID_DE_MAC) {
         NanMacStats mac_stats;
+        if (message_len != sizeof(NanMacStats)) {
+            ALOGE("%s: stats_type = %d invalid stats length = %u expected length = %zu\n",
+                   __func__, stats_type, message_len, sizeof(NanMacStats));
+            return;
+        }
         FwNanMacStats *pMacStats = (FwNanMacStats *)rspBuf;
 
         mac_stats.validFrames = pMacStats->validFrames;
@@ -765,6 +811,11 @@ void NanCommand::handleNanStatsResponse(NanStatsType stats_type,
         memcpy(&pRsp->data, &mac_stats, sizeof(NanMacStats));
     } else if (stats_type == NAN_STATS_ID_DE_TIMING_SYNC) {
         NanSyncStats sync_stats;
+        if (message_len != sizeof(NanSyncStats)) {
+            ALOGE("%s: stats_type = %d invalid stats length = %u expected length = %zu\n",
+                   __func__, stats_type, message_len, sizeof(NanSyncStats));
+            return;
+        }
         FwNanSyncStats *pSyncStats = (FwNanSyncStats *)rspBuf;
 
         sync_stats.currTsf = pSyncStats->currTsf;
@@ -817,9 +868,15 @@ void NanCommand::handleNanStatsResponse(NanStatsType stats_type,
         sync_stats.discBeaconTxFailures = pSyncStats->discBeaconTxFailures;
         sync_stats.amHopCountExpireCount = pSyncStats->amHopCountExpireCount;
         sync_stats.ndpChannelFreq = pSyncStats->ndpChannelFreq;
+        sync_stats.ndpChannelFreq2 = pSyncStats->ndpChannelFreq2;
         memcpy(&pRsp->data, &sync_stats, sizeof(NanSyncStats));
     } else if (stats_type == NAN_STATS_ID_DE) {
         NanDeStats de_stats;
+        if (message_len != sizeof(NanDeStats)) {
+            ALOGE("%s: stats_type = %d invalid stats length = %u expected length = %zu\n",
+                   __func__, stats_type, message_len, sizeof(NanDeStats));
+            return;
+        }
         FwNanDeStats *pDeStats = (FwNanDeStats *)rspBuf;
 
         de_stats.validErrorRspMsgs = pDeStats->validErrorRspMsgs;

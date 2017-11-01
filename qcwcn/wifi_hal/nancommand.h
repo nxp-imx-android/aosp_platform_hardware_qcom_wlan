@@ -20,7 +20,6 @@
 #include "common.h"
 #include "cpp_bindings.h"
 #include "wifi_hal.h"
-#include "qca-vendor.h"
 #include "vendor_definitions.h"
 #include "nan_cert.h"
 
@@ -47,6 +46,7 @@ private:
     //based on the indication type
     int handleNanIndication();
     //Various Functions to get the appropriate indications
+    int getNanPublishReplied(NanPublishRepliedInd *event);
     int getNanPublishTerminated(NanPublishTerminatedInd *event);
     int getNanMatch(NanMatchInd *event);
     int getNanMatchExpired(NanMatchExpiredInd *event);
@@ -92,7 +92,8 @@ private:
                                      NanFurtherAvailabilityChannel *pFac);
     void handleNanStatsResponse(NanStatsType stats_type,
                                 char* rspBuf,
-                                NanStatsResponse *pRsp);
+                                NanStatsResponse *pRsp,
+                                u32 message_len);
 
     //Function which unparses the data and calls the NotifyResponse
     int handleNdpResponse(NanResponseType ndpCmdtyp, struct nlattr **tb_vendor);
@@ -101,6 +102,8 @@ private:
     int getNdpConfirm(struct nlattr **tb_vendor, NanDataPathConfirmInd *event);
     int getNdpEnd(struct nlattr **tb_vendor, NanDataPathEndInd *event);
     int getNanTransmitFollowupInd(NanTransmitFollowupInd *event);
+    int getNanRangeRequestReceivedInd(NanRangeRequestInd *event);
+    int getNanRangeReportInd(NanRangeReportInd *event);
 public:
     NanCommand(wifi_handle handle, int id, u32 vendor_id, u32 subcmd);
     static NanCommand* instance(wifi_handle handle);
@@ -129,7 +132,7 @@ public:
     int putNanBeaconSdfPayload(transaction_id id, const NanBeaconSdfPayloadRequest *pReq);
     int getNanStaParameter(wifi_interface_handle iface, NanStaParameter *pRsp);
     int putNanCapabilities(transaction_id id);
-    int putNanAvailabilityDebug(NanAvailabilityDebug debug);
+    int putNanDebugCommand(NanDebugParams debug, int debug_msg_length);
 
     /* Functions for NAN error translation
        For NanResponse, NanPublishTerminatedInd, NanSubscribeTerminatedInd,

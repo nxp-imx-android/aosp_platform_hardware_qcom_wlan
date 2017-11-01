@@ -38,6 +38,7 @@
 #include <dirent.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <cld80211_lib.h>
 
 #include "sync.h"
 
@@ -180,7 +181,7 @@ static wifi_error acquire_supported_features(wifi_interface_handle iface,
     supportedFeatures.getResponseparams(set);
 
 cleanup:
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 static wifi_error wifi_get_capabilities(wifi_interface_handle handle)
@@ -246,7 +247,7 @@ static wifi_error get_firmware_bus_max_size_supported(
     info->firmware_bus_max_size = busSizeSupported.getBusSize();
 
 cleanup:
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 static wifi_error wifi_init_user_sock(hal_info *info)
@@ -293,6 +294,27 @@ static wifi_error wifi_init_user_sock(hal_info *info)
     ALOGV("Initiialized diag sock successfully");
     return WIFI_SUCCESS;
 }
+
+static wifi_error wifi_init_cld80211_sock_cb(hal_info *info)
+{
+    struct nl_cb *cb = nl_socket_get_cb(info->cldctx->sock);
+    if (cb == NULL) {
+        ALOGE("Could not get cb");
+        return WIFI_ERROR_UNKNOWN;
+    }
+
+    info->user_sock_arg = 1;
+    nl_cb_set(cb, NL_CB_SEQ_CHECK, NL_CB_CUSTOM, no_seq_check, NULL);
+    nl_cb_err(cb, NL_CB_CUSTOM, error_handler, &info->user_sock_arg);
+    nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, finish_handler, &info->user_sock_arg);
+    nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, ack_handler, &info->user_sock_arg);
+
+    nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, user_sock_message_handler, info);
+    nl_cb_put(cb);
+
+    return WIFI_SUCCESS;
+}
+
 
 /*initialize function pointer table with Qualcomm HAL API*/
 wifi_error init_wifi_vendor_hal_func_table(wifi_hal_fn *fn) {
@@ -386,8 +408,24 @@ wifi_error init_wifi_vendor_hal_func_table(wifi_hal_fn *fn) {
     fn->wifi_get_roaming_capabilities = wifi_get_roaming_capabilities;
     fn->wifi_configure_roaming = wifi_configure_roaming;
     fn->wifi_enable_firmware_roaming = wifi_enable_firmware_roaming;
+    fn->wifi_select_tx_power_scenario = wifi_select_tx_power_scenario;
+    fn->wifi_reset_tx_power_scenario = wifi_reset_tx_power_scenario;
 
     return WIFI_SUCCESS;
+}
+
+static void cld80211lib_cleanup(hal_info *info)
+{
+    if (!info->cldctx)
+        return;
+    cld80211_remove_mcast_group(info->cldctx, "host_logs");
+    cld80211_remove_mcast_group(info->cldctx, "fw_logs");
+    cld80211_remove_mcast_group(info->cldctx, "per_pkt_stats");
+    cld80211_remove_mcast_group(info->cldctx, "diag_events");
+    cld80211_remove_mcast_group(info->cldctx, "fatal_events");
+    exit_cld80211_recv(info->cldctx);
+    cld80211_deinit(info->cldctx);
+    info->cldctx = NULL;
 }
 
 wifi_error wifi_initialize(wifi_handle *handle)
@@ -398,6 +436,7 @@ wifi_error wifi_initialize(wifi_handle *handle)
     struct nl_sock *cmd_sock = NULL;
     struct nl_sock *event_sock = NULL;
     struct nl_cb *cb = NULL;
+    int status = 0;
 
     ALOGI("Initializing wifi");
     hal_info *info = (hal_info *)malloc(sizeof(hal_info));
@@ -495,10 +534,46 @@ wifi_error wifi_initialize(wifi_handle *handle)
     wifi_add_membership(*handle, "regulatory");
     wifi_add_membership(*handle, "vendor");
 
-    ret = wifi_init_user_sock(info);
-    if (ret != WIFI_SUCCESS) {
-        ALOGE("Failed to alloc user socket");
-        goto unload;
+    info->cldctx = cld80211_init();
+    if (info->cldctx != NULL) {
+        info->user_sock = info->cldctx->sock;
+        ret = wifi_init_cld80211_sock_cb(info);
+        if (ret != WIFI_SUCCESS) {
+            ALOGE("Could not set cb for CLD80211 family");
+            goto cld80211_cleanup;
+        }
+
+        status = cld80211_add_mcast_group(info->cldctx, "host_logs");
+        if (status) {
+            ALOGE("Failed to add mcast group host_logs :%d", status);
+            goto cld80211_cleanup;
+        }
+        status = cld80211_add_mcast_group(info->cldctx, "fw_logs");
+        if (status) {
+            ALOGE("Failed to add mcast group fw_logs :%d", status);
+            goto cld80211_cleanup;
+        }
+        status = cld80211_add_mcast_group(info->cldctx, "per_pkt_stats");
+        if (status) {
+            ALOGE("Failed to add mcast group per_pkt_stats :%d", status);
+            goto cld80211_cleanup;
+        }
+        status = cld80211_add_mcast_group(info->cldctx, "diag_events");
+        if (status) {
+            ALOGE("Failed to add mcast group diag_events :%d", status);
+            goto cld80211_cleanup;
+        }
+        status = cld80211_add_mcast_group(info->cldctx, "fatal_events");
+        if (status) {
+            ALOGE("Failed to add mcast group fatal_events :%d", status);
+            goto cld80211_cleanup;
+        }
+    } else {
+        ret = wifi_init_user_sock(info);
+        if (ret != WIFI_SUCCESS) {
+            ALOGE("Failed to alloc user socket");
+            goto unload;
+        }
     }
 
     ret = wifi_init_interfaces(*handle);
@@ -598,6 +673,11 @@ wifi_error wifi_initialize(wifi_handle *handle)
     ALOGV("Initialized Wifi HAL Successfully; vendor cmd = %d Supported"
             " features : %x", NL80211_CMD_VENDOR, info->supported_feature_set);
 
+cld80211_cleanup:
+    if (status != 0 || ret != WIFI_SUCCESS) {
+        ret = WIFI_ERROR_UNKNOWN;
+        cld80211lib_cleanup(info);
+    }
 unload:
     if (ret != WIFI_SUCCESS) {
         if (cmd_sock)
@@ -607,7 +687,11 @@ unload:
         if (info) {
             if (info->cmd) free(info->cmd);
             if (info->event_cb) free(info->event_cb);
-            if (info->user_sock) nl_socket_free(info->user_sock);
+            if (info->cldctx) {
+                cld80211lib_cleanup(info);
+            } else if (info->user_sock) {
+                nl_socket_free(info->user_sock);
+            }
             if (info->pkt_stats) free(info->pkt_stats);
             if (info->rx_aggr_pkts) free(info->rx_aggr_pkts);
             cleanupGscanHandlers(info);
@@ -649,7 +733,9 @@ static void internal_cleaned_up_handler(wifi_handle handle)
         info->event_sock = NULL;
     }
 
-    if (info->user_sock != 0) {
+    if (info->cldctx != NULL) {
+        cld80211lib_cleanup(info);
+    } else if (info->user_sock != 0) {
         nl_socket_free(info->user_sock);
         info->user_sock = NULL;
     }
@@ -1116,7 +1202,7 @@ cleanup:
     if (ret) {
         *set_size = 0;
     }
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 
@@ -1162,7 +1248,7 @@ wifi_error wifi_set_nodfs_flag(wifi_interface_handle handle, u32 nodfs)
 
 cleanup:
     delete vCommand;
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 wifi_error wifi_start_sending_offloaded_packet(wifi_request_id id,
@@ -1182,7 +1268,7 @@ wifi_error wifi_start_sending_offloaded_packet(wifi_request_id id,
                                 &vCommand);
     if (ret != WIFI_SUCCESS) {
         ALOGE("%s: Initialization failed", __func__);
-        return (wifi_error)ret;
+        return mapErrorKernelToWifiHAL(ret);
     }
 
     ALOGV("ip packet length : %u\nIP Packet:", ip_packet_len);
@@ -1226,7 +1312,7 @@ wifi_error wifi_start_sending_offloaded_packet(wifi_request_id id,
 
 cleanup:
     delete vCommand;
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 wifi_error wifi_stop_sending_offloaded_packet(wifi_request_id id,
@@ -1241,7 +1327,7 @@ wifi_error wifi_stop_sending_offloaded_packet(wifi_request_id id,
                                 &vCommand);
     if (ret != WIFI_SUCCESS) {
         ALOGE("%s: Initialization failed", __func__);
-        return (wifi_error)ret;
+        return mapErrorKernelToWifiHAL(ret);
     }
 
     /* Add the vendor specific attributes for the NL command. */
@@ -1268,7 +1354,7 @@ wifi_error wifi_stop_sending_offloaded_packet(wifi_request_id id,
 
 cleanup:
     delete vCommand;
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 static wifi_error wifi_set_packet_filter(wifi_interface_handle iface,
@@ -1294,7 +1380,7 @@ static wifi_error wifi_set_packet_filter(wifi_interface_handle iface,
                                     &vCommand);
         if (ret != WIFI_SUCCESS) {
             ALOGE("%s: Initialization failed", __FUNCTION__);
-            return (wifi_error)ret;
+            return mapErrorKernelToWifiHAL(ret);
         }
 
         /* Add the vendor specific attributes for the NL command. */
@@ -1346,7 +1432,7 @@ static wifi_error wifi_set_packet_filter(wifi_interface_handle iface,
 cleanup:
     if (vCommand)
         delete vCommand;
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 static wifi_error wifi_get_packet_filter_capabilities(
@@ -1413,7 +1499,7 @@ static wifi_error wifi_get_packet_filter_capabilities(
     *max_len = vCommand->getFilterLength();
 cleanup:
     delete vCommand;
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }
 
 
@@ -1429,7 +1515,7 @@ static wifi_error wifi_configure_nd_offload(wifi_interface_handle iface,
                                 &vCommand);
     if (ret != WIFI_SUCCESS) {
         ALOGE("%s: Initialization failed", __func__);
-        return (wifi_error)ret;
+        return mapErrorKernelToWifiHAL(ret);
     }
 
     ALOGV("ND offload : %s", enable?"Enable":"Disable");
@@ -1452,5 +1538,5 @@ static wifi_error wifi_configure_nd_offload(wifi_interface_handle iface,
 
 cleanup:
     delete vCommand;
-    return (wifi_error)ret;
+    return mapErrorKernelToWifiHAL(ret);
 }

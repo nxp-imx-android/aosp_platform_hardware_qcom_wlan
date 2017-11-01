@@ -104,8 +104,8 @@ int NanCommand::putNanEnable(transaction_id id, const NanEnableRequest *pReq)
           sizeof(pReq->config_cluster_attribute_val)) : 0 \
         ) + \
         (
-          pReq->config_scan_params ? (SIZEOF_TLV_HDR + \
-          NAN_MAX_SOCIAL_CHANNELS * sizeof(u32)) : 0 \
+          pReq->config_scan_params ? NAN_MAX_SOCIAL_CHANNELS *
+          (SIZEOF_TLV_HDR + sizeof(u32)) : 0 \
         ) + \
         (
           pReq->config_random_factor_force ? (SIZEOF_TLV_HDR + \
@@ -136,13 +136,13 @@ int NanCommand::putNanEnable(transaction_id id, const NanEnableRequest *pReq)
            sizeof(u32)) : 0 \
         ) + \
         (
-           pReq->config_responder_auto_response ? (SIZEOF_TLV_HDR + \
-           sizeof(u32)) : 0 \
+           /* Always include cfg discovery indication TLV */
+           SIZEOF_TLV_HDR + sizeof(u32) \
         ) + \
         (
-           pReq->discovery_indication_cfg ? (SIZEOF_TLV_HDR + \
-           sizeof(u32)) : 0 \
-        );
+          pReq->config_subscribe_sid_beacon ? (SIZEOF_TLV_HDR + \
+          sizeof(pReq->subscribe_sid_beacon_val)) : 0 \
+        ) ;
     pNanEnableReqMsg pFwReq = (pNanEnableReqMsg)malloc(message_len);
     if (pFwReq == NULL) {
         cleanup();
@@ -291,23 +291,17 @@ int NanCommand::putNanEnable(transaction_id id, const NanEnableRequest *pReq)
                       sizeof(u32),
                       (const u8*)&pReq->disc_mac_addr_rand_interval_sec, tlvs);
     }
-    if (pReq->config_responder_auto_response) {
-        tlvs = addTlv(NAN_TLV_TYPE_RANGING_AUTO_RESPONSE_CFG,
-                      sizeof(u32),
-                      (const u8*)&pReq->ranging_auto_response_cfg, tlvs);
-    }
-    if (pReq->discovery_indication_cfg) {
-        NanConfigDiscoveryIndications discovery_indications;
-        discovery_indications.disableDiscoveryMacAddressEvent =
-                               (pReq->discovery_indication_cfg & BIT_0) ? 1 : 0;
-        discovery_indications.disableDiscoveryStartedClusterEvent =
-                               (pReq->discovery_indication_cfg & BIT_1) ? 1 : 0;
-        discovery_indications.disableDiscoveryJoinedClusterEvent =
-                               (pReq->discovery_indication_cfg & BIT_2) ? 1 : 0;
 
-        tlvs = addTlv(NAN_TLV_TYPE_CONFIG_DISCOVERY_INDICATIONS,
-                      sizeof(u32),
-                      (const u8*)&discovery_indications, tlvs);
+    u32 config_discovery_indications;
+    config_discovery_indications = (u32)pReq->discovery_indication_cfg;
+    tlvs = addTlv(NAN_TLV_TYPE_CONFIG_DISCOVERY_INDICATIONS,
+                  sizeof(u32),
+                  (const u8*)&config_discovery_indications, tlvs);
+
+    if (pReq->config_subscribe_sid_beacon) {
+        tlvs = addTlv(NAN_TLV_TYPE_SUBSCRIBE_SID_BEACON,
+                      sizeof(pReq->subscribe_sid_beacon_val),
+                      (const u8*)&pReq->subscribe_sid_beacon_val, tlvs);
     }
 
     mVendorData = (char*)pFwReq;
@@ -358,7 +352,7 @@ int NanCommand::putNanDisable(transaction_id id)
 int NanCommand::putNanConfig(transaction_id id, const NanConfigRequest *pReq)
 {
     ALOGV("NAN_CONFIG");
-    size_t message_len = NAN_MAX_CONFIGURATION_REQ_SIZE;
+    size_t message_len = 0;
     int idx = 0;
 
     if (pReq == NULL ||
@@ -395,8 +389,8 @@ int NanCommand::putNanConfig(transaction_id id, const NanConfigRequest *pReq)
            sizeof(pReq->config_cluster_attribute_val)) : 0 \
         ) + \
         (
-           pReq->config_scan_params ? (SIZEOF_TLV_HDR + \
-           NAN_MAX_SOCIAL_CHANNELS * sizeof(u32)) : 0 \
+           pReq->config_scan_params ? NAN_MAX_SOCIAL_CHANNELS *
+           (SIZEOF_TLV_HDR + sizeof(u32)) : 0 \
         ) + \
         (
            pReq->config_random_factor_force ? (SIZEOF_TLV_HDR + \
@@ -423,12 +417,12 @@ int NanCommand::putNanConfig(transaction_id id, const NanConfigRequest *pReq)
            sizeof(u32)) : 0 \
         ) + \
         (
-           pReq->config_responder_auto_response ? (SIZEOF_TLV_HDR + \
-           sizeof(u32)) : 0 \
-        )  + \
+          pReq->config_subscribe_sid_beacon ? (SIZEOF_TLV_HDR + \
+          sizeof(pReq->subscribe_sid_beacon_val)) : 0 \
+        ) + \
         (
-           pReq->discovery_indication_cfg ? (SIZEOF_TLV_HDR + \
-           sizeof(u32)) : 0 \
+           /* Always include cfg discovery indication TLV */
+           SIZEOF_TLV_HDR + sizeof(u32) \
         );
 
     if (pReq->num_config_discovery_attr) {
@@ -466,7 +460,6 @@ int NanCommand::putNanConfig(transaction_id id, const NanConfigRequest *pReq)
         tlvs = addTlv(NAN_TLV_TYPE_MASTER_PREFERENCE, sizeof(pReq->master_pref),
                       (const u8*)&pReq->master_pref, tlvs);
     }
-
     if (pReq->config_rssi_window_size) {
         tlvs = addTlv(NAN_TLV_TYPE_RSSI_AVERAGING_WINDOW_SIZE, sizeof(pReq->rssi_window_size_val),
                       (const u8*)&pReq->rssi_window_size_val, tlvs);
@@ -474,6 +467,15 @@ int NanCommand::putNanConfig(transaction_id id, const NanConfigRequest *pReq)
     if (pReq->config_rssi_proximity) {
         tlvs = addTlv(NAN_TLV_TYPE_24G_RSSI_CLOSE_PROXIMITY, sizeof(pReq->rssi_proximity),
                       (const u8*)&pReq->rssi_proximity, tlvs);
+    }
+    if (pReq->config_5g_rssi_close_proximity) {
+        tlvs = addTlv(NAN_TLV_TYPE_5G_RSSI_CLOSE_PROXIMITY,
+                      sizeof(pReq->rssi_close_proximity_5g_val),
+                      (const u8*)&pReq->rssi_close_proximity_5g_val, tlvs);
+    }
+    if (pReq->config_cluster_attribute_val) {
+        tlvs = addTlv(NAN_TLV_TYPE_CLUSTER_ATTRIBUTE_IN_SDF, sizeof(pReq->config_cluster_attribute_val),
+                      (const u8*)&pReq->config_cluster_attribute_val, tlvs);
     }
     if (pReq->config_scan_params) {
         u32 socialChannelParamVal[NAN_MAX_SOCIAL_CHANNELS];
@@ -521,7 +523,6 @@ int NanCommand::putNanConfig(transaction_id id, const NanConfigRequest *pReq)
                       calcNanFurtherAvailabilityMapSize(&pReq->fam_val),
                       (const u8*)(tlvs + SIZEOF_TLV_HDR), tlvs);
     }
-
     if (pReq->config_dw.config_2dot4g_dw_band) {
         tlvs = addTlv(NAN_TLV_TYPE_2G_COMMITTED_DW,
                       sizeof(pReq->config_dw.dw_2dot4g_interval_val),
@@ -537,25 +538,18 @@ int NanCommand::putNanConfig(transaction_id id, const NanConfigRequest *pReq)
                       sizeof(u32),
                       (const u8*)&pReq->disc_mac_addr_rand_interval_sec, tlvs);
     }
-    if (pReq->config_responder_auto_response) {
-        tlvs = addTlv(NAN_TLV_TYPE_RANGING_AUTO_RESPONSE_CFG,
-                      sizeof(u32),
-                      (const u8*)&pReq->ranging_auto_response_cfg, tlvs);
+    if (pReq->config_subscribe_sid_beacon) {
+        tlvs = addTlv(NAN_TLV_TYPE_SUBSCRIBE_SID_BEACON,
+                      sizeof(pReq->subscribe_sid_beacon_val),
+                      (const u8*)&pReq->subscribe_sid_beacon_val, tlvs);
     }
 
-    if (pReq->discovery_indication_cfg) {
-        NanConfigDiscoveryIndications discovery_indications;
-        discovery_indications.disableDiscoveryMacAddressEvent =
-                               (pReq->discovery_indication_cfg & BIT_0) ? 1 : 0;
-        discovery_indications.disableDiscoveryStartedClusterEvent =
-                               (pReq->discovery_indication_cfg & BIT_1) ? 1 : 0;
-        discovery_indications.disableDiscoveryJoinedClusterEvent =
-                               (pReq->discovery_indication_cfg & BIT_2) ? 1 : 0;
-
-        tlvs = addTlv(NAN_TLV_TYPE_CONFIG_DISCOVERY_INDICATIONS,
-                      sizeof(u32),
-                      (const u8*)&discovery_indications, tlvs);
-    }
+    u32 config_discovery_indications;
+    config_discovery_indications = (u32)(pReq->discovery_indication_cfg);
+    /* Always include the discovery cfg TLV as there is no cfg flag */
+    tlvs = addTlv(NAN_TLV_TYPE_CONFIG_DISCOVERY_INDICATIONS,
+                  sizeof(u32),
+                  (const u8*)&config_discovery_indications, tlvs);
 
     mVendorData = (char*)pFwReq;
     mDataLen = message_len;
@@ -584,15 +578,29 @@ int NanCommand::putNanPublish(transaction_id id, const NanPublishRequest *pReq)
         (pReq->service_specific_info_len ? SIZEOF_TLV_HDR + pReq->service_specific_info_len : 0) +
         (pReq->rx_match_filter_len ? SIZEOF_TLV_HDR + pReq->rx_match_filter_len : 0) +
         (pReq->tx_match_filter_len ? SIZEOF_TLV_HDR + pReq->tx_match_filter_len : 0) +
-        (pReq->service_responder_policy ? SIZEOF_TLV_HDR + sizeof(NanServiceAcceptPolicy) : 0) +
+        (SIZEOF_TLV_HDR + sizeof(NanServiceAcceptPolicy)) +
         (pReq->cipher_type ? SIZEOF_TLV_HDR + sizeof(NanCsidType) : 0) +
-        (pReq->pmk_len ? SIZEOF_TLV_HDR + NAN_PMK_INFO_LEN : 0) +
         ((pReq->sdea_params.config_nan_data_path || pReq->sdea_params.security_cfg ||
-          pReq->sdea_params.ranging_state) ?
+          pReq->sdea_params.ranging_state || pReq->sdea_params.range_report) ?
           SIZEOF_TLV_HDR + sizeof(NanFWSdeaCtrlParams) : 0) +
         ((pReq->ranging_cfg.ranging_interval_msec || pReq->ranging_cfg.config_ranging_indications ||
           pReq->ranging_cfg.distance_ingress_cm || pReq->ranging_cfg.distance_egress_cm) ?
-          SIZEOF_TLV_HDR + sizeof(NanRangingCfg) : 0);
+          SIZEOF_TLV_HDR + sizeof(NanFWRangeConfigParams) : 0) +
+        ((pReq->range_response_cfg.publish_id ||
+          pReq->range_response_cfg.ranging_response) ?
+          SIZEOF_TLV_HDR + sizeof(NanFWRangeReqMsg) : 0)  +
+        (pReq->sdea_service_specific_info_len ? SIZEOF_TLV_HDR + pReq->sdea_service_specific_info_len : 0);
+
+    if ((pReq->key_info.key_type ==  NAN_SECURITY_KEY_INPUT_PMK) &&
+        (pReq->key_info.body.pmk_info.pmk_len == NAN_PMK_INFO_LEN))
+        message_len += SIZEOF_TLV_HDR + NAN_PMK_INFO_LEN;
+    else if ((pReq->key_info.key_type ==  NAN_SECURITY_KEY_INPUT_PASSPHRASE) &&
+             (pReq->key_info.body.passphrase_info.passphrase_len >=
+              NAN_SECURITY_MIN_PASSPHRASE_LEN) &&
+             (pReq->key_info.body.passphrase_info.passphrase_len <=
+              NAN_SECURITY_MAX_PASSPHRASE_LEN))
+        message_len += SIZEOF_TLV_HDR +
+                       pReq->key_info.body.passphrase_info.passphrase_len;
 
     pNanPublishServiceReqMsg pFwReq = (pNanPublishServiceReqMsg)malloc(message_len);
     if (pFwReq == NULL) {
@@ -614,7 +622,8 @@ int NanCommand::putNanPublish(transaction_id id, const NanPublishRequest *pReq)
 
     pFwReq->publishServiceReqParams.ttl = pReq->ttl;
     pFwReq->publishServiceReqParams.period = pReq->period;
-    pFwReq->publishServiceReqParams.reserved = 0;
+    pFwReq->publishServiceReqParams.replyIndFlag =
+                                   (pReq->recv_indication_cfg & BIT_3) ? 0 : 1;
     pFwReq->publishServiceReqParams.publishType = pReq->publish_type;
     pFwReq->publishServiceReqParams.txType = pReq->tx_type;
 
@@ -648,23 +657,38 @@ int NanCommand::putNanPublish(transaction_id id, const NanPublishRequest *pReq)
         tlvs = addTlv(NAN_TLV_TYPE_TX_MATCH_FILTER, pReq->tx_match_filter_len,
                       (const u8*)&pReq->tx_match_filter[0], tlvs);
     }
-    if (pReq->service_responder_policy) {
-        tlvs = addTlv(NAN_TLV_TYPE_NAN_SERVICE_ACCEPT_POLICY, sizeof(NanServiceAcceptPolicy),
-                      (const u8*)&pReq->service_responder_policy, tlvs);
-    }
+
+    /* Pass the Accept policy always */
+    tlvs = addTlv(NAN_TLV_TYPE_NAN_SERVICE_ACCEPT_POLICY, sizeof(NanServiceAcceptPolicy),
+                  (const u8*)&pReq->service_responder_policy, tlvs);
+
     if (pReq->cipher_type) {
         NanCsidType pNanCsidType;
         pNanCsidType.csid_type = pReq->cipher_type;
         tlvs = addTlv(NAN_TLV_TYPE_NAN_CSID, sizeof(NanCsidType),
                         (const u8*)&pNanCsidType, tlvs);
     }
-    if (pReq->pmk_len) {
-        tlvs = addTlv(NAN_TLV_TYPE_NAN_PMK, pReq->pmk_len,
-                      (const u8*)&pReq->pmk[0], tlvs);
+
+    if ((pReq->key_info.key_type ==  NAN_SECURITY_KEY_INPUT_PMK) &&
+        (pReq->key_info.body.pmk_info.pmk_len == NAN_PMK_INFO_LEN)) {
+        tlvs = addTlv(NAN_TLV_TYPE_NAN_PMK,
+                      pReq->key_info.body.pmk_info.pmk_len,
+                      (const u8*)&pReq->key_info.body.pmk_info.pmk[0], tlvs);
+    } else if ((pReq->key_info.key_type == NAN_SECURITY_KEY_INPUT_PASSPHRASE) &&
+        (pReq->key_info.body.passphrase_info.passphrase_len >=
+         NAN_SECURITY_MIN_PASSPHRASE_LEN) &&
+        (pReq->key_info.body.passphrase_info.passphrase_len <=
+         NAN_SECURITY_MAX_PASSPHRASE_LEN)) {
+        tlvs = addTlv(NAN_TLV_TYPE_NAN_PASSPHRASE,
+                  pReq->key_info.body.passphrase_info.passphrase_len,
+                  (const u8*)&pReq->key_info.body.passphrase_info.passphrase[0],
+                  tlvs);
     }
+
     if (pReq->sdea_params.config_nan_data_path ||
         pReq->sdea_params.security_cfg ||
-        pReq->sdea_params.ranging_state) {
+        pReq->sdea_params.ranging_state ||
+        pReq->sdea_params.range_report) {
         NanFWSdeaCtrlParams pNanFWSdeaCtrlParams;
         memset(&pNanFWSdeaCtrlParams, 0, sizeof(NanFWSdeaCtrlParams));
 
@@ -684,19 +708,29 @@ int NanCommand::putNanPublish(transaction_id id, const NanPublishRequest *pReq)
             pNanFWSdeaCtrlParams.ranging_required =
                                          pReq->sdea_params.ranging_state;
         }
+        if (pReq->sdea_params.range_report) {
+            pNanFWSdeaCtrlParams.range_report =
+                (((pReq->sdea_params.range_report & NAN_ENABLE_RANGE_REPORT) >> 1) ? 1 : 0);
+        }
         tlvs = addTlv(NAN_TLV_TYPE_SDEA_CTRL_PARAMS, sizeof(NanFWSdeaCtrlParams),
                         (const u8*)&pNanFWSdeaCtrlParams, tlvs);
     }
 
-    if (pReq->ranging_cfg.ranging_interval_msec || pReq->ranging_cfg.config_ranging_indications) {
+    if (pReq->ranging_cfg.ranging_interval_msec ||
+        pReq->ranging_cfg.config_ranging_indications ||
+        pReq->ranging_cfg.distance_ingress_cm ||
+        pReq->ranging_cfg.distance_ingress_cm) {
         NanFWRangeConfigParams pNanFWRangingCfg;
+
         memset(&pNanFWRangingCfg, 0, sizeof(NanFWRangeConfigParams));
         pNanFWRangingCfg.range_interval =
                                 pReq->ranging_cfg.ranging_interval_msec;
         pNanFWRangingCfg.ranging_indication_event =
-                                         ((pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_CONTINUOUS_MASK) |
-                                          (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_INGRESS_MET_MASK) |
-                                          (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_EGRESS_MET_MASK));
+            ((pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_CONTINUOUS_MASK) |
+            (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_INGRESS_MET_MASK) |
+            (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_EGRESS_MET_MASK));
+
+        pNanFWRangingCfg.ranging_indication_event = pReq->ranging_cfg.config_ranging_indications;
         if (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_INGRESS_MET_MASK)
             pNanFWRangingCfg.geo_fence_threshold.inner_threshold =
                                         pReq->ranging_cfg.distance_ingress_cm;
@@ -705,6 +739,28 @@ int NanCommand::putNanPublish(transaction_id id, const NanPublishRequest *pReq)
                                        pReq->ranging_cfg.distance_egress_cm;
         tlvs = addTlv(NAN_TLV_TYPE_NAN_RANGING_CFG, sizeof(NanFWRangeConfigParams),
                                                     (const u8*)&pNanFWRangingCfg, tlvs);
+    }
+
+    if (pReq->sdea_service_specific_info_len) {
+        tlvs = addTlv(NAN_TLV_TYPE_SDEA_SERVICE_SPECIFIC_INFO, pReq->sdea_service_specific_info_len,
+                      (const u8*)&pReq->sdea_service_specific_info[0], tlvs);
+    }
+
+    if (pReq->range_response_cfg.publish_id || pReq->range_response_cfg.ranging_response) {
+
+        NanFWRangeReqMsg pNanFWRangeReqMsg;
+        memset(&pNanFWRangeReqMsg, 0, sizeof(NanFWRangeReqMsg));
+        pNanFWRangeReqMsg.range_id =
+                                (u16)pReq->range_response_cfg.publish_id;
+        CHAR_ARRAY_TO_MAC_ADDR(pReq->range_response_cfg.peer_addr, pNanFWRangeReqMsg.range_mac_addr);
+        pNanFWRangeReqMsg.ranging_accept =
+            ((pReq->range_response_cfg.ranging_response == NAN_RANGE_REQUEST_ACCEPT) ? 1 : 0);
+        pNanFWRangeReqMsg.ranging_reject =
+            ((pReq->range_response_cfg.ranging_response == NAN_RANGE_REQUEST_REJECT) ? 1 : 0);
+        pNanFWRangeReqMsg.ranging_cancel =
+            ((pReq->range_response_cfg.ranging_response == NAN_RANGE_REQUEST_CANCEL) ? 1 : 0);
+        tlvs = addTlv(NAN_TLV_TYPE_NAN20_RANGING_REQUEST, sizeof(NanFWRangeReqMsg),
+                                                    (const u8*)&pNanFWRangeReqMsg, tlvs);
     }
 
     mVendorData = (char *)pFwReq;
@@ -774,16 +830,32 @@ int NanCommand::putNanSubscribe(transaction_id id,
         (pReq->rx_match_filter_len ? SIZEOF_TLV_HDR + pReq->rx_match_filter_len : 0) +
         (pReq->tx_match_filter_len ? SIZEOF_TLV_HDR + pReq->tx_match_filter_len : 0) +
         (pReq->cipher_type ? SIZEOF_TLV_HDR + sizeof(NanCsidType) : 0) +
-        (pReq->pmk_len ? SIZEOF_TLV_HDR + NAN_PMK_INFO_LEN : 0) +
         ((pReq->sdea_params.config_nan_data_path || pReq->sdea_params.security_cfg ||
-          pReq->sdea_params.ranging_state) ?
+          pReq->sdea_params.ranging_state || pReq->sdea_params.range_report) ?
           SIZEOF_TLV_HDR + sizeof(NanFWSdeaCtrlParams) : 0) +
         ((pReq->ranging_cfg.ranging_interval_msec || pReq->ranging_cfg.config_ranging_indications ||
           pReq->ranging_cfg.distance_ingress_cm || pReq->ranging_cfg.distance_egress_cm) ?
-          SIZEOF_TLV_HDR + sizeof(NanRangingCfg) : 0);
+          SIZEOF_TLV_HDR + sizeof(NanFWRangeConfigParams) : 0) +
+        ((pReq->range_response_cfg.requestor_instance_id ||
+          pReq->range_response_cfg.ranging_response) ?
+          SIZEOF_TLV_HDR + sizeof(NanFWRangeReqMsg) : 0) +
+        (pReq->sdea_service_specific_info_len ? SIZEOF_TLV_HDR + pReq->sdea_service_specific_info_len : 0);
 
     message_len += \
         (pReq->num_intf_addr_present * (SIZEOF_TLV_HDR + NAN_MAC_ADDR_LEN));
+
+
+    if ((pReq->key_info.key_type ==  NAN_SECURITY_KEY_INPUT_PMK) &&
+        (pReq->key_info.body.pmk_info.pmk_len == NAN_PMK_INFO_LEN))
+        message_len += SIZEOF_TLV_HDR + NAN_PMK_INFO_LEN;
+    else if ((pReq->key_info.key_type ==  NAN_SECURITY_KEY_INPUT_PASSPHRASE) &&
+             (pReq->key_info.body.passphrase_info.passphrase_len >=
+              NAN_SECURITY_MIN_PASSPHRASE_LEN) &&
+             (pReq->key_info.body.passphrase_info.passphrase_len <=
+              NAN_SECURITY_MAX_PASSPHRASE_LEN))
+        message_len += SIZEOF_TLV_HDR +
+                       pReq->key_info.body.passphrase_info.passphrase_len;
+
 
     pNanSubscribeServiceReqMsg pFwReq = (pNanSubscribeServiceReqMsg)malloc(message_len);
     if (pFwReq == NULL) {
@@ -854,13 +926,27 @@ int NanCommand::putNanSubscribe(transaction_id id,
         tlvs = addTlv(NAN_TLV_TYPE_NAN_CSID, sizeof(NanCsidType),
                         (const u8*)&pNanCsidType, tlvs);
     }
-    if (pReq->pmk_len) {
-        tlvs = addTlv(NAN_TLV_TYPE_NAN_PMK, pReq->pmk_len,
-                      (const u8*)&pReq->pmk[0], tlvs);
+
+    if ((pReq->key_info.key_type ==  NAN_SECURITY_KEY_INPUT_PMK) &&
+        (pReq->key_info.body.pmk_info.pmk_len == NAN_PMK_INFO_LEN)) {
+        tlvs = addTlv(NAN_TLV_TYPE_NAN_PMK,
+                      pReq->key_info.body.pmk_info.pmk_len,
+                      (const u8*)&pReq->key_info.body.pmk_info.pmk[0], tlvs);
+    } else if ((pReq->key_info.key_type == NAN_SECURITY_KEY_INPUT_PASSPHRASE) &&
+        (pReq->key_info.body.passphrase_info.passphrase_len >=
+         NAN_SECURITY_MIN_PASSPHRASE_LEN) &&
+        (pReq->key_info.body.passphrase_info.passphrase_len <=
+         NAN_SECURITY_MAX_PASSPHRASE_LEN)) {
+        tlvs = addTlv(NAN_TLV_TYPE_NAN_PASSPHRASE,
+                  pReq->key_info.body.passphrase_info.passphrase_len,
+                  (const u8*)&pReq->key_info.body.passphrase_info.passphrase[0],
+                  tlvs);
     }
+
     if (pReq->sdea_params.config_nan_data_path ||
         pReq->sdea_params.security_cfg ||
-        pReq->sdea_params.ranging_state) {
+        pReq->sdea_params.ranging_state ||
+        pReq->sdea_params.range_report) {
         NanFWSdeaCtrlParams pNanFWSdeaCtrlParams;
         memset(&pNanFWSdeaCtrlParams, 0, sizeof(NanFWSdeaCtrlParams));
 
@@ -880,20 +966,28 @@ int NanCommand::putNanSubscribe(transaction_id id,
             pNanFWSdeaCtrlParams.ranging_required =
                                          pReq->sdea_params.ranging_state;
         }
+        if (pReq->sdea_params.range_report) {
+            pNanFWSdeaCtrlParams.range_report =
+                ((pReq->sdea_params.range_report & NAN_ENABLE_RANGE_REPORT >> 1) ? 1 : 0);
+        }
         tlvs = addTlv(NAN_TLV_TYPE_SDEA_CTRL_PARAMS, sizeof(NanFWSdeaCtrlParams),
                         (const u8*)&pNanFWSdeaCtrlParams, tlvs);
 
     }
 
-    if (pReq->ranging_cfg.ranging_interval_msec || pReq->ranging_cfg.config_ranging_indications) {
+    if (pReq->ranging_cfg.ranging_interval_msec || pReq->ranging_cfg.config_ranging_indications || pReq->ranging_cfg.distance_ingress_cm
+        || pReq->ranging_cfg.distance_ingress_cm) {
         NanFWRangeConfigParams pNanFWRangingCfg;
         memset(&pNanFWRangingCfg, 0, sizeof(NanFWRangeConfigParams));
         pNanFWRangingCfg.range_interval =
                                 pReq->ranging_cfg.ranging_interval_msec;
         pNanFWRangingCfg.ranging_indication_event =
-                                         ((pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_CONTINUOUS_MASK) |
-                                          (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_INGRESS_MET_MASK) |
-                                          (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_EGRESS_MET_MASK));
+            ((pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_CONTINUOUS_MASK) |
+            (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_INGRESS_MET_MASK) |
+            (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_EGRESS_MET_MASK));
+
+        pNanFWRangingCfg.ranging_indication_event =
+                                          pReq->ranging_cfg.config_ranging_indications;
         if (pReq->ranging_cfg.config_ranging_indications & NAN_RANGING_INDICATE_INGRESS_MET_MASK)
             pNanFWRangingCfg.geo_fence_threshold.inner_threshold =
                                         pReq->ranging_cfg.distance_ingress_cm;
@@ -902,6 +996,27 @@ int NanCommand::putNanSubscribe(transaction_id id,
                                        pReq->ranging_cfg.distance_egress_cm;
         tlvs = addTlv(NAN_TLV_TYPE_NAN_RANGING_CFG, sizeof(NanFWRangeConfigParams),
                                                     (const u8*)&pNanFWRangingCfg, tlvs);
+    }
+
+    if (pReq->sdea_service_specific_info_len) {
+        tlvs = addTlv(NAN_TLV_TYPE_SDEA_SERVICE_SPECIFIC_INFO, pReq->sdea_service_specific_info_len,
+                      (const u8*)&pReq->sdea_service_specific_info[0], tlvs);
+    }
+
+    if (pReq->range_response_cfg.requestor_instance_id || pReq->range_response_cfg.ranging_response) {
+        NanFWRangeReqMsg pNanFWRangeReqMsg;
+        memset(&pNanFWRangeReqMsg, 0, sizeof(NanFWRangeReqMsg));
+        pNanFWRangeReqMsg.range_id =
+                                pReq->range_response_cfg.requestor_instance_id;
+        memcpy(&pNanFWRangeReqMsg.range_mac_addr, &pReq->range_response_cfg.peer_addr, NAN_MAC_ADDR_LEN);
+        pNanFWRangeReqMsg.ranging_accept =
+            ((pReq->range_response_cfg.ranging_response == NAN_RANGE_REQUEST_ACCEPT) ? 1 : 0);
+        pNanFWRangeReqMsg.ranging_reject =
+            ((pReq->range_response_cfg.ranging_response == NAN_RANGE_REQUEST_REJECT) ? 1 : 0);
+        pNanFWRangeReqMsg.ranging_cancel =
+            ((pReq->range_response_cfg.ranging_response == NAN_RANGE_REQUEST_CANCEL) ? 1 : 0);
+        tlvs = addTlv(NAN_TLV_TYPE_NAN20_RANGING_REQUEST, sizeof(NanFWRangeReqMsg),
+                                                    (const u8*)&pNanFWRangeReqMsg, tlvs);
     }
 
     mVendorData = (char *)pFwReq;
@@ -965,7 +1080,8 @@ int NanCommand::putNanTransmitFollowup(transaction_id id,
     size_t message_len =
         sizeof(NanMsgHeader) + sizeof(NanTransmitFollowupReqParams) +
         (pReq->service_specific_info_len ? SIZEOF_TLV_HDR +
-         pReq->service_specific_info_len : 0);
+         pReq->service_specific_info_len : 0) +
+        (pReq->sdea_service_specific_info_len ? SIZEOF_TLV_HDR + pReq->sdea_service_specific_info_len : 0);
 
     /* Mac address needs to be added in TLV */
     message_len += (SIZEOF_TLV_HDR + sizeof(pReq->addr));
@@ -1005,6 +1121,11 @@ int NanCommand::putNanTransmitFollowup(transaction_id id,
     if (pReq->service_specific_info_len) {
         tlvs = addTlv(tlv_type, pReq->service_specific_info_len,
                       (const u8*)&pReq->service_specific_info[0], tlvs);
+    }
+
+    if (pReq->sdea_service_specific_info_len) {
+        tlvs = addTlv(NAN_TLV_TYPE_SDEA_SERVICE_SPECIFIC_INFO, pReq->sdea_service_specific_info_len,
+                      (const u8*)&pReq->sdea_service_specific_info[0], tlvs);
     }
 
     mVendorData = (char *)pFwReq;
@@ -1234,6 +1355,12 @@ int NanCommand::requestEvent()
         goto out;
     }
 
+    if (!mInfo->cmd_sock) {
+        ALOGE("%s: Command socket is null",__func__);
+        res = -1;
+        goto out;
+    }
+
     /* send message */
     ALOGV("%s:Handle:%p Socket Value:%p", __func__, mInfo, mInfo->cmd_sock);
     res = nl_send_auto_complete(mInfo->cmd_sock, mMsg.getMessage());
@@ -1410,6 +1537,7 @@ int NanCommand::calcNanFurtherAvailabilityMapSize(
 
 int NanCommand::putNanCapabilities(transaction_id id)
 {
+    ALOGV("NAN_CAPABILITIES");
     size_t message_len = sizeof(NanCapabilitiesReqMsg);
 
     pNanCapabilitiesReqMsg pFwReq = (pNanCapabilitiesReqMsg)malloc(message_len);
@@ -1437,22 +1565,25 @@ int NanCommand::putNanCapabilities(transaction_id id)
     return ret;
 }
 
-int NanCommand::putNanAvailabilityDebug(NanAvailabilityDebug debug)
+int NanCommand::putNanDebugCommand(NanDebugParams debug,
+                                   int debug_msg_length)
 {
-
+    ALOGV("NAN_AVAILABILITY_DEBUG");
     size_t message_len = sizeof(NanTestModeReqMsg);
-    ALOGV("Message Len %zu", message_len);
 
-    message_len += (SIZEOF_TLV_HDR + sizeof(NanAvailabilityDebug));
+    message_len += (SIZEOF_TLV_HDR + debug_msg_length);
     pNanTestModeReqMsg pFwReq = (pNanTestModeReqMsg)malloc(message_len);
     if (pFwReq == NULL) {
         cleanup();
         return WIFI_ERROR_OUT_OF_MEMORY;
     }
 
-    ALOGV("Message Len %zu", message_len);
-    ALOGV("Valid %d 2g %d 5g %d", debug.valid, debug.band_availability_2g,
-                                               debug.band_availability_5g);
+    ALOGV("Message Len %zu\n", message_len);
+    ALOGV("%s: Debug Command Type = 0x%x \n", __func__, debug.cmd);
+    ALOGV("%s: ** Debug Command Data Start **", __func__);
+    hexdump(debug.debug_cmd_data, debug_msg_length);
+    ALOGV("%s: ** Debug Command Data End **", __func__);
+
     memset (pFwReq, 0, message_len);
     pFwReq->fwHeader.msgVersion = (u16)NAN_MSG_VERSION1;
     pFwReq->fwHeader.msgId = NAN_MSG_ID_TESTMODE_REQ;
@@ -1460,7 +1591,7 @@ int NanCommand::putNanAvailabilityDebug(NanAvailabilityDebug debug)
     pFwReq->fwHeader.transactionId = 0;
 
     u8* tlvs = pFwReq->ptlv;
-    tlvs = addTlv(NAN_TLV_TYPE_TM_NAN_AVAILABILITY, sizeof(NanAvailabilityDebug),
+    tlvs = addTlv(NAN_TLV_TYPE_TESTMODE_GENERIC_CMD, debug_msg_length,
                   (const u8*)&debug, tlvs);
 
     mVendorData = (char*)pFwReq;
