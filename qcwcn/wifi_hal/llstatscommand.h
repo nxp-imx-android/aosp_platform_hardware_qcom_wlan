@@ -36,7 +36,6 @@
 
 #include "nl80211_copy.h"
 #include "common.h"
-#include "qca-vendor.h"
 #include "cpp_bindings.h"
 #include "link_layer_stats.h"
 
@@ -113,6 +112,8 @@ public:
                                             struct nlattr **tb_vendor);
 
     virtual void setHandler(wifi_stats_result_handler handler);
+
+    virtual void clearStats();
 };
 
 #ifdef __cplusplus
